@@ -2,10 +2,8 @@ name: OCI Instance Auto Runner
 
 on:
   schedule:
-    # 6분마다 실행
     - cron: '*/5 * * * *'
 
-  # GitHub Actions 화면에서 수동 실행 가능
   workflow_dispatch:
 
 jobs:
