@@ -8,7 +8,6 @@ import oci
 
 INSTANCE_NAME = "macrowatch"
 SHAPE = "VM.Standard.A1.Flex"
-
 OCPUS = 1.0
 MEMORY_GB = 6.0
 
@@ -16,8 +15,8 @@ EMAIL_TO = "hoorash@outlook.kr"
 
 
 def send_notification(subject, body):
-    sender_email = os.environ.get("EMAIL_USER")
-    password = os.environ.get("EMAIL_PASS")
+    sender_email = os.environ.get("EMAIL_USER", "").strip()
+    password = os.environ.get("EMAIL_PASS", "").strip()
 
     if not sender_email or not password:
         print("⚠️ EMAIL_USER 또는 EMAIL_PASS가 없어 이메일 발송을 건너뜁니다.")
@@ -33,25 +32,32 @@ def send_notification(subject, body):
 
         if "gmail.com" in sender_lower:
             smtp_server = "smtp.gmail.com"
-        elif (
-            "outlook.com" in sender_lower
-            or "outlook.kr" in sender_lower
-            or "hotmail.com" in sender_lower
-            or "live.com" in sender_lower
+
+        elif any(
+            domain in sender_lower
+            for domain in [
+                "outlook.com",
+                "outlook.kr",
+                "hotmail.com",
+                "live.com",
+            ]
         ):
             smtp_server = "smtp-mail.outlook.com"
+
         else:
-            print(
-                f"⚠️ 알 수 없는 이메일 서비스입니다: {sender_email}\n"
-                "이메일 발송을 건너뜁니다."
-            )
+            print(f"⚠️ 지원하지 않는 이메일 서비스: {sender_email}")
             return
 
         with smtplib.SMTP(smtp_server, 587, timeout=30) as server:
             server.ehlo()
             server.starttls()
             server.ehlo()
-            server.login(sender_email, password)
+
+            server.login(
+                sender_email,
+                password
+            )
+
             server.sendmail(
                 sender_email,
                 [EMAIL_TO],
@@ -61,6 +67,7 @@ def send_notification(subject, body):
         print(f"📧 성공 알림 이메일 발송 완료: {EMAIL_TO}")
 
     except Exception as e:
+        # 서버 생성 성공이 이메일 문제 때문에 실패 처리되면 안 됨
         print(f"⚠️ 이메일 발송 실패: {e}")
 
 
@@ -75,28 +82,34 @@ def get_required_env(name):
 
 
 def main():
-    print("==================================================")
+
+    print("=" * 50)
     print("OCI macrowatch Auto Runner 시작")
-    print("==================================================")
+    print("=" * 50)
 
     # --------------------------------------------------
-    # GitHub Secrets
+    # 필수 OCI 설정
     # --------------------------------------------------
 
     user_ocid = get_required_env("OCI_USER_OCID")
     fingerprint = get_required_env("OCI_FINGERPRINT")
     tenancy_ocid = get_required_env("OCI_TENANCY_OCID")
     subnet_id = get_required_env("OCI_SUBNET_OCID")
-    ssh_public_key = get_required_env("OCI_SSH_PUBLIC_KEY")
+    key_content = get_required_env("OCI_KEY_CONTENT")
 
+    # 선택 설정
     region = os.environ.get(
         "OCI_REGION",
         "ap-singapore-1"
     ).strip()
 
-    key_content = get_required_env("OCI_KEY_CONTENT")
+    # SSH 키는 없어도 서버 생성 시도
+    ssh_public_key = os.environ.get(
+        "OCI_SSH_PUBLIC_KEY",
+        ""
+    ).strip()
 
-    # GitHub Secret에 \n이 문자 그대로 저장된 경우에도 처리
+    # GitHub Secret에 "\n" 문자가 그대로 저장된 경우 처리
     key_content = key_content.replace("\\n", "\n")
 
     config = {
@@ -104,16 +117,22 @@ def main():
         "fingerprint": fingerprint,
         "key_content": key_content,
         "tenancy": tenancy_ocid,
-        "region": region
+        "region": region,
     }
 
+    # OCI_COMPARTMENT_OCID가 있으면 사용하고
+    # 없으면 tenancy root compartment 사용
     compartment_id = (
         os.environ.get("OCI_COMPARTMENT_OCID")
         or tenancy_ocid
     )
 
     try:
-        # OCI config 형식 검사
+
+        # --------------------------------------------------
+        # OCI 인증 확인
+        # --------------------------------------------------
+
         oci.config.validate_config(config)
 
         core_client = oci.core.ComputeClient(config)
@@ -122,7 +141,7 @@ def main():
         print(f"🌏 OCI Region: {region}")
 
         # --------------------------------------------------
-        # 기존 인스턴스 확인
+        # 기존 macrowatch 인스턴스 확인
         # --------------------------------------------------
 
         print("🔎 기존 macrowatch 인스턴스 확인 중...")
@@ -139,17 +158,13 @@ def main():
                 and instance.lifecycle_state
                 not in ["TERMINATED", "TERMINATING"]
             ):
-                print(
-                    f"✅ '{INSTANCE_NAME}' 인스턴스가 이미 존재합니다."
-                )
-                print(
-                    f"상태: {instance.lifecycle_state}"
-                )
-                print(
-                    f"OCID: {instance.id}"
-                )
+                print("")
+                print(f"✅ '{INSTANCE_NAME}' 인스턴스가 이미 존재합니다.")
+                print(f"상태: {instance.lifecycle_state}")
+                print(f"OCID: {instance.id}")
+                print("")
+                print("추가 인스턴스를 생성하지 않습니다.")
 
-                # 이미 있으면 추가 생성 방지
                 sys.exit(0)
 
         # --------------------------------------------------
@@ -166,10 +181,9 @@ def main():
         ).data
 
         if not images:
-            print("❌ VM.Standard.A1.Flex용 Ubuntu 이미지를 찾지 못했습니다.")
+            print("❌ A1 Flex용 Ubuntu 이미지를 찾지 못했습니다.")
             sys.exit(1)
 
-        # ARM / aarch64 이미지 우선
         arm_images = [
             image
             for image in images
@@ -212,45 +226,64 @@ def main():
         )
 
         # --------------------------------------------------
-        # 각 AD에서 순차적으로 생성
+        # SSH metadata
         # --------------------------------------------------
 
-        last_error = None
+        metadata = {}
+
+        if ssh_public_key:
+            metadata["ssh_authorized_keys"] = ssh_public_key
+            print("🔑 SSH 공개키 적용")
+        else:
+            print("⚠️ SSH 공개키 없음 - 키 없이 인스턴스 생성 시도")
+
+        # --------------------------------------------------
+        # 각 AD에서 생성 시도
+        # --------------------------------------------------
 
         for ad in ads:
 
             print("")
-            print("--------------------------------------------------")
+            print("-" * 50)
             print(f"🚀 생성 시도: {ad.name}")
-            print("--------------------------------------------------")
+            print("-" * 50)
 
             launch_details = oci.core.models.LaunchInstanceDetails(
+
                 compartment_id=compartment_id,
+
                 availability_domain=ad.name,
+
                 display_name=INSTANCE_NAME,
+
                 shape=SHAPE,
 
-                shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-                    ocpus=OCPUS,
-                    memory_in_gbs=MEMORY_GB
+                shape_config=(
+                    oci.core.models.LaunchInstanceShapeConfigDetails(
+                        ocpus=OCPUS,
+                        memory_in_gbs=MEMORY_GB
+                    )
                 ),
 
-                source_details=oci.core.models.InstanceSourceViaImageDetails(
-                    source_type="image",
-                    image_id=target_image.id
+                source_details=(
+                    oci.core.models.InstanceSourceViaImageDetails(
+                        source_type="image",
+                        image_id=target_image.id
+                    )
                 ),
 
-                create_vnic_details=oci.core.models.CreateVnicDetails(
-                    subnet_id=subnet_id,
-                    assign_public_ip=True
+                create_vnic_details=(
+                    oci.core.models.CreateVnicDetails(
+                        subnet_id=subnet_id,
+                        assign_public_ip=True
+                    )
                 ),
 
-                metadata={
-                    "ssh_authorized_keys": ssh_public_key
-                }
+                metadata=metadata
             )
 
             try:
+
                 response = core_client.launch_instance(
                     launch_instance_details=launch_details
                 )
@@ -258,13 +291,21 @@ def main():
                 instance = response.data
 
                 print("")
-                print("🎉 OCI 인스턴스 생성 요청 성공!")
+                print("=" * 50)
+                print("🎉 OCI A1 인스턴스 생성 성공!")
+                print("=" * 50)
+
                 print(f"이름: {INSTANCE_NAME}")
                 print(f"OCID: {instance.id}")
+                print(f"Region: {region}")
                 print(f"AD: {ad.name}")
                 print(f"Shape: {SHAPE}")
                 print(f"OCPU: {OCPUS}")
                 print(f"RAM: {MEMORY_GB} GB")
+
+                # --------------------------------------------------
+                # 성공 메일
+                # --------------------------------------------------
 
                 send_notification(
                     "🎉 [OCI] macrowatch 인스턴스 생성 성공!",
@@ -280,13 +321,17 @@ def main():
                     )
                 )
 
+                # 성공
                 sys.exit(0)
 
             except oci.exceptions.ServiceError as e:
-                last_error = e
 
                 error_code = getattr(e, "code", "")
-                error_message = getattr(e, "message", str(e))
+                error_message = getattr(
+                    e,
+                    "message",
+                    str(e)
+                )
 
                 print(
                     f"❌ 생성 실패 [{ad.name}]"
@@ -305,11 +350,14 @@ def main():
                     f"{error_code} {error_message}"
                 ).lower()
 
-                # OCI Free Tier A1에서 흔한 Capacity 부족
+                # --------------------------------------------------
+                # A1 자리 없음
+                # --------------------------------------------------
+
                 if (
-                    "out of capacity" in error_text
+                    "out of host capacity" in error_text
+                    or "out of capacity" in error_text
                     or "outofcapacity" in error_text
-                    or "capacity" in error_text
                 ):
                     print(
                         "➡️ 현재 해당 AD에 A1 여유 용량이 없습니다."
@@ -319,7 +367,10 @@ def main():
                     )
                     continue
 
-                # 서비스 제한
+                # --------------------------------------------------
+                # OCI 서비스 한도
+                # --------------------------------------------------
+
                 if (
                     "limitexceeded" in error_text
                     or "limit exceeded" in error_text
@@ -329,14 +380,20 @@ def main():
                     )
                     continue
 
-                # 다른 오류도 다른 AD 시도
+                # --------------------------------------------------
+                # 기타 오류
+                # --------------------------------------------------
+
+                print(
+                    "⚠️ 예상하지 못한 OCI 오류입니다."
+                )
                 print(
                     "➡️ 다른 Availability Domain을 계속 시도합니다."
                 )
+
                 continue
 
             except Exception as e:
-                last_error = e
 
                 print(
                     f"💥 예상하지 못한 오류 [{ad.name}]: {e}"
@@ -345,29 +402,25 @@ def main():
                 continue
 
         # --------------------------------------------------
-        # 모든 AD 실패
+        # 모든 AD에서 Capacity 없음
         # --------------------------------------------------
 
         print("")
-        print("==================================================")
-        print("❌ 모든 Availability Domain에서 생성 실패")
+        print("=" * 50)
+        print("⏳ 현재 A1 여유 용량 없음")
         print("다음 GitHub Actions 실행 때 다시 시도합니다.")
-        print("==================================================")
+        print("=" * 50)
 
-        if last_error:
-            print(f"마지막 오류: {last_error}")
-
-        sys.exit(1)
-
-    except oci.exceptions.ConfigFileNotFound:
-        print("❌ OCI 설정 파일 오류")
-        sys.exit(1)
+        # 자리 없음은 프로그램 오류가 아니므로 정상 종료
+        sys.exit(0)
 
     except oci.exceptions.InvalidConfig as e:
+
         print(f"❌ OCI 인증 설정 오류: {e}")
         sys.exit(1)
 
     except Exception as e:
+
         print(f"💥 스크립트 실행 중 예외 발생: {e}")
         sys.exit(1)
 
