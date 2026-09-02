@@ -3,7 +3,7 @@ name: Oracle Auto Instance Creator
 on:
   schedule:
     # 15분마다 자동 실행 (Cron)
-    - cron: '*/15 * * * *'
+    - cron: '*/6 * * * *'
   workflow_dispatch: # 수동으로 [Run workflow] 버튼을 눌러 실행할 수 있게 설정
 
 jobs:
