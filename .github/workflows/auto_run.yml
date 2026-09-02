@@ -1,0 +1,32 @@
+name: Oracle Auto Instance Creator
+
+on:
+  schedule:
+    # 15분마다 자동 실행 (Cron)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 수동으로 [Run workflow] 버튼을 눌러 실행할 수 있게 설정
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 불러오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 환경 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: OCI SDK 라이브러리 설치
+        run: pip install oci
+
+      - name: 생성 스크립트 실행
+        env:
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_KEY_CONTENT: ${{ secrets.OCI_KEY_CONTENT }}
+          OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+        run: python main.py
