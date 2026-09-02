@@ -4,146 +4,138 @@ import smtplib
 from email.mime.text import MIMEText
 import oci
 
-# --- 이메일 발송 함수 ---
-def send_success_email(instance_id):
+def send_notification(subject, body):
     sender = os.environ.get("EMAIL_USER")
     password = os.environ.get("EMAIL_PASS")
     
-    if not sender or not password:
-        print("⚠️ EMAIL_USER 또는 EMAIL_PASS 시크릿이 설정되지 않아 이메일 알림을 건너뜁니다.")
-        return
+    # EMAIL_USER에 여러 주소가 들어있을 경우 수신자 처리
+    if sender and "," in sender:
+        recipients = [email.strip() for email in sender.split(",")]
+        sender_email = recipients[0]
+    else:
+        recipients = [sender]
+        sender_email = sender
 
-    subject = "🎉 [OCI] macrowatch 인스턴스 생성 성공!"
-    body = (
-        f"안녕하세요, 윤슬님!\n\n"
-        f"요청하신 Oracle Cloud 인스턴스 'macrowatch'가 성공적으로 생성되었습니다.\n\n"
-        f"- Instance ID: {instance_id}\n"
-        f"- Region: {os.environ.get('OCI_REGION')}\n\n"
-        f"이제 깃허브 액션 시도를 중단하셔도 됩니다!"
-    )
+    if not sender_email or not password:
+        print("⚠️ 이메일 환경변수가 설정되지 않아 알림 발송을 스킵합니다.")
+        return
 
     msg = MIMEText(body)
     msg['Subject'] = subject
-    msg['From'] = sender
-    msg['To'] = sender
+    msg['From'] = sender_email
+    msg['To'] = ", ".join(recipients)
 
-    # 아웃룩 및 지메일 겸용 자동 감지 발송
     try:
-        if "@outlook" in sender.lower() or "@hotmail" in sender.lower():
-            # Outlook / Hotmail 설정
-            with smtplib.SMTP("smtp-mail.outlook.com", 587) as server:
-                server.starttls()
-                server.login(sender, password)
-                server.sendmail(sender, sender, msg.as_string())
-        else:
-            # Gmail / 기타 기본 SSL 설정
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(sender, password)
-                server.sendmail(sender, sender, msg.as_string())
-        print("📧 성공 알림 이메일 발송 완료!")
+        # 지메일(smtp.gmail.com) 또는 아웃룩(smtp-mail.outlook.com) 자동 구분
+        smtp_server = "smtp.gmail.com" if "gmail" in sender_email else "smtp-mail.outlook.com"
+        
+        server = smtplib.SMTP(smtp_server, 587)
+        server.starttls()
+        server.login(sender_email, password)
+        server.sendmail(sender_email, recipients, msg.as_string())
+        server.quit()
+        print("📧 이메일 알림 발송 완료!")
     except Exception as e:
-        print(f"⚠️ 이메일 발송 실패: {e}")
+        print(f"❌ 이메일 발송 실패: {e}")
 
-# --- 메인 실행 함수 ---
 def main():
-    user_ocid = os.environ.get("OCI_USER_OCID")
-    tenancy_ocid = os.environ.get("OCI_TENANCY_OCID")
-    fingerprint = os.environ.get("OCI_FINGERPRINT")
-    region = os.environ.get("OCI_REGION")
-    key_content = os.environ.get("OCI_KEY_CONTENT")
-    subnet_id = os.environ.get("OCI_SUBNET_ID")
-
+    # 1. OCI API 인증 설정
     config = {
-        "user": user_ocid,
-        "key_content": key_content,
-        "fingerprint": fingerprint,
-        "tenancy": tenancy_ocid,
-        "region": region
+        "user": os.environ.get("OCI_USER_OCID"),
+        "fingerprint": os.environ.get("OCI_FINGERPRINT"),
+        "key_content": os.environ.get("OCI_KEY_CONTENT"),
+        "tenancy": os.environ.get("OCI_TENANCY_OCID"),
+        "region": os.environ.get("OCI_REGION", "ap-singapore-1")
     }
 
     try:
-        compute_client = oci.core.ComputeClient(config)
+        core_client = oci.core.ComputeClient(config)
         identity_client = oci.identity.IdentityClient(config)
-    except Exception as e:
-        print(f"❌ OCI 인증 설정 실패: {e}")
-        sys.exit(1)
+        
+        compartment_id = os.environ.get("OCI_COMPARTMENT_OCID") or config["tenancy"]
+        subnet_id = os.environ.get("OCI_SUBNET_OCID")
+        ssh_public_key = os.environ.get("OCI_SSH_PUBLIC_KEY")
 
-    # 1. 이미 'macrowatch' 인스턴스가 존재하는지 체크 (있으면 바로 종료)
-    try:
-        instances = compute_client.list_instances(compartment_id=tenancy_ocid).data
+        # 2. 기존 'macrowatch' 인스턴스가 있는지 확인
+        instances = core_client.list_instances(compartment_id=compartment_id).data
         for inst in instances:
-            if inst.display_name == "macrowatch" and inst.lifecycle_state in ["RUNNING", "PROVISIONING"]:
-                print("✅ 'macrowatch' 인스턴스가 이미 존재하고 실행 중입니다. 작업을 종료합니다.")
+            if inst.display_name == "macrowatch" and inst.lifecycle_state not in ["TERMINATED", "TERMINATING"]:
+                print("🎉 'macrowatch' 인스턴스가 이미 존재하고 실행 중입니다.")
                 sys.exit(0)
-    except Exception as e:
-        print(f"⚠️ 기존 인스턴스 조회 실패 (계속 진행): {e}")
 
-    # 2. Ubuntu 26.04 이미지 탐색
-    image_id = None
-    try:
-        images = compute_client.list_images(
-            compartment_id=tenancy_ocid,
+        # 3. 우분투 26.04 aarch64 최신 이미지 탐색
+        images = core_client.list_images(
+            compartment_id=compartment_id,
             operating_system="Canonical Ubuntu",
             shape="VM.Standard.A1.Flex"
         ).data
+
+        aarch64_images = [img for img in images if "aarch64" in img.display_name.lower() and "26.04" in img.display_name]
         
-        for img in images:
-            if "26.04" in img.display_name:
-                image_id = img.id
-                print(f"✅ Ubuntu 26.04 이미지 발견: {img.display_name}")
-                break
-    except Exception as e:
-        print(f"⚠️ 이미지 조회 실패: {e}")
+        if not aarch64_images:
+            # 26.04가 없을 경우 전체 aarch64 우분투 이미지 중 최신 선택
+            aarch64_images = [img for img in images if "aarch64" in img.display_name.lower()]
 
-    if not image_id:
-        print("❌ Ubuntu 26.04 이미지를 찾지 못해 시도를 중단합니다.")
-        sys.exit(1)
-
-    # 3. Availability Domain 탐색
-    try:
-        ads = identity_client.list_availability_domains(compartment_id=tenancy_ocid).data
-        ad_name = ads[0].name
-    except Exception as e:
-        print(f"❌ AD 조회 실패: {e}")
-        sys.exit(1)
-
-    # 4. 인스턴스 생성 요청 상세 설정
-    launch_details = oci.core.models.LaunchInstanceDetails(
-        compartment_id=tenancy_ocid,
-        availability_domain=ad_name,
-        display_name="macrowatch",
-        shape="VM.Standard.A1.Flex",
-        shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-            ocpus=4.0,
-            memory_in_gbs=24.0
-        ),
-        source_details=oci.core.models.InstanceSourceViaImageDetails(
-            image_id=image_id
-        ),
-        create_vnic_details=oci.core.models.CreateVnicDetails(
-            subnet_id=subnet_id,
-            assign_public_ip=True
-        )
-    )
-
-    # 5. 인스턴스 생성 시도
-    try:
-        print(f"🚀 [{region} / {ad_name}] 'macrowatch' 인스턴스 생성 시도 중...")
-        response = compute_client.launch_instance(launch_details)
-        instance_id = response.data.id
-        print("🎉🎉 축하합니다! 'macrowatch' 인스턴스 생성 성공! ID:", instance_id)
-        
-        # 성공 시 이메일 발송
-        send_success_email(instance_id)
-        sys.exit(0)
-
-    except oci.exceptions.ServiceError as e:
-        if e.status == 500 or "Out of capacity" in str(e) or "Capacity" in str(e):
-            print("❌ 자원 부족 (Out of Capacity). 다음 스케줄에 자동으로 재시도합니다.")
-            sys.exit(0)
-        else:
-            print(f"❌ OCI 서비스 에러 발생: {e}")
+        if not aarch64_images:
+            print("❌ 적합한 Ubuntu aarch64 이미지를 찾을 수 없습니다.")
             sys.exit(1)
+
+        # 가장 최근에 나온 이미지 선택
+        target_image = sorted(aarch64_images, key=lambda x: x.time_created, reverse=True)[0]
+        print(f"✅ Ubuntu 이미지 발견: {target_image.display_name}")
+
+        # 4. 가용 도메인(AD) 가져오기
+        ads = identity_client.list_availability_domains(compartment_id=config["tenancy"]).data
+
+        # 5. 인스턴스 생성 시도 (수정된 무료 규격 2 OCPU / 12GB 적용)
+        for ad in ads:
+            print(f"🚀 [{ad.name}] 'macrowatch' 인스턴스 생성 시도 중...")
+            
+            launch_details = oci.core.models.LaunchInstanceDetails(
+                compartment_id=compartment_id,
+                availability_domain=ad.name,
+                display_name="macrowatch",
+                shape="VM.Standard.A1.Flex",
+                shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
+                    ocpus=2.0,          # ✅ 변경된 2 OCPU 적용
+                    memory_in_gbs=12.0  # ✅ 변경된 12 GB RAM 적용
+                ),
+                image_id=target_image.id,
+                create_vnic_details=oci.core.models.CreateVnicDetails(
+                    subnet_id=subnet_id,
+                    assign_public_ip=True
+                ),
+                metadata={
+                    "ssh_authorized_keys": ssh_public_key
+                }
+            )
+
+            try:
+                response = core_client.launch_instance(launch_details)
+                instance = response.data
+                print(f"🎉 성공! 인스턴스 생성됨: {instance.id}")
+                
+                # 성공 알림 메일 보내기
+                send_notification(
+                    "🎉 [OCI] macrowatch 인스턴스 생성 성공!",
+                    f"축하합니다 윤슬아!\n\nOCI Ampere A1 (2 OCPU / 12GB) 'macrowatch' 인스턴스가 성공적으로 생성되었습니다.\n\n"
+                    f"인스턴스 ID: {instance.id}\n"
+                    f"가용 도메인: {ad.name}"
+                )
+                sys.exit(0)
+
+            except oci.exceptions.ServiceError as e:
+                if e.status == 500 or "Out of capacity" in str(e) or "LimitExceeded" in str(e):
+                    print(f"❌ 자원 부족 (Out of Capacity). 다음 스케줄에 자동으로 재시도합니다.")
+                else:
+                    print(f"⚠️ 에러 발생 [{ad.name}]: {e.message}")
+
+        # 모든 AD에서 자원 확보 실패 시
+        sys.exit(1)
+
+    except Exception as e:
+        print(f"💥 스크립트 실행 중 예외 발생: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
