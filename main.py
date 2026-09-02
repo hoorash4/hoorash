@@ -8,7 +8,6 @@ def send_notification(subject, body):
     sender = os.environ.get("EMAIL_USER")
     password = os.environ.get("EMAIL_PASS")
     
-    # EMAIL_USER에 여러 주소가 들어있을 경우 수신자 처리
     if sender and "," in sender:
         recipients = [email.strip() for email in sender.split(",")]
         sender_email = recipients[0]
@@ -26,7 +25,6 @@ def send_notification(subject, body):
     msg['To'] = ", ".join(recipients)
 
     try:
-        # 지메일(smtp.gmail.com) 또는 아웃룩(smtp-mail.outlook.com) 자동 구분
         smtp_server = "smtp.gmail.com" if "gmail" in sender_email else "smtp-mail.outlook.com"
         
         server = smtplib.SMTP(smtp_server, 587)
@@ -39,7 +37,6 @@ def send_notification(subject, body):
         print(f"❌ 이메일 발송 실패: {e}")
 
 def main():
-    # 1. OCI API 인증 설정
     config = {
         "user": os.environ.get("OCI_USER_OCID"),
         "fingerprint": os.environ.get("OCI_FINGERPRINT"),
@@ -56,14 +53,12 @@ def main():
         subnet_id = os.environ.get("OCI_SUBNET_OCID")
         ssh_public_key = os.environ.get("OCI_SSH_PUBLIC_KEY")
 
-        # 2. 기존 'macrowatch' 인스턴스가 있는지 확인
         instances = core_client.list_instances(compartment_id=compartment_id).data
         for inst in instances:
             if inst.display_name == "macrowatch" and inst.lifecycle_state not in ["TERMINATED", "TERMINATING"]:
                 print("🎉 'macrowatch' 인스턴스가 이미 존재하고 실행 중입니다.")
                 sys.exit(0)
 
-        # 3. 우분투 26.04 aarch64 최신 이미지 탐색
         images = core_client.list_images(
             compartment_id=compartment_id,
             operating_system="Canonical Ubuntu",
@@ -73,21 +68,17 @@ def main():
         aarch64_images = [img for img in images if "aarch64" in img.display_name.lower() and "26.04" in img.display_name]
         
         if not aarch64_images:
-            # 26.04가 없을 경우 전체 aarch64 우분투 이미지 중 최신 선택
             aarch64_images = [img for img in images if "aarch64" in img.display_name.lower()]
 
         if not aarch64_images:
             print("❌ 적합한 Ubuntu aarch64 이미지를 찾을 수 없습니다.")
             sys.exit(1)
 
-        # 가장 최근에 나온 이미지 선택
         target_image = sorted(aarch64_images, key=lambda x: x.time_created, reverse=True)[0]
         print(f"✅ Ubuntu 이미지 발견: {target_image.display_name}")
 
-        # 4. 가용 도메인(AD) 가져오기
         ads = identity_client.list_availability_domains(compartment_id=config["tenancy"]).data
 
-        # 5. 인스턴스 생성 시도 (수정된 무료 규격 2 OCPU / 12GB 적용)
         for ad in ads:
             print(f"🚀 [{ad.name}] 'macrowatch' 인스턴스 생성 시도 중...")
             
@@ -97,8 +88,8 @@ def main():
                 display_name="macrowatch",
                 shape="VM.Standard.A1.Flex",
                 shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-                    ocpus=2.0,          # ✅ 변경된 2 OCPU 적용
-                    memory_in_gbs=12.0  # ✅ 변경된 12 GB RAM 적용
+                    ocpus=1.0,          # ✅ 1 OCPU (화면 표기 기본값)
+                    memory_in_gbs=6.0   # ✅ 6 GB RAM (화면 표기 기본값)
                 ),
                 image_id=target_image.id,
                 create_vnic_details=oci.core.models.CreateVnicDetails(
@@ -115,10 +106,9 @@ def main():
                 instance = response.data
                 print(f"🎉 성공! 인스턴스 생성됨: {instance.id}")
                 
-                # 성공 알림 메일 보내기
                 send_notification(
                     "🎉 [OCI] macrowatch 인스턴스 생성 성공!",
-                    f"축하합니다 윤슬아!\n\nOCI Ampere A1 (2 OCPU / 12GB) 'macrowatch' 인스턴스가 성공적으로 생성되었습니다.\n\n"
+                    f"축하합니다 윤슬아!\n\nOCI Ampere A1 (1 OCPU / 6GB) 'macrowatch' 인스턴스가 성공적으로 생성되었습니다.\n\n"
                     f"인스턴스 ID: {instance.id}\n"
                     f"가용 도메인: {ad.name}"
                 )
@@ -130,7 +120,6 @@ def main():
                 else:
                     print(f"⚠️ 에러 발생 [{ad.name}]: {e.message}")
 
-        # 모든 AD에서 자원 확보 실패 시
         sys.exit(1)
 
     except Exception as e:
