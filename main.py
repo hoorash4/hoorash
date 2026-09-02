@@ -53,6 +53,11 @@ def main():
         subnet_id = os.environ.get("OCI_SUBNET_OCID")
         ssh_public_key = os.environ.get("OCI_SSH_PUBLIC_KEY")
 
+        # 서브넷 누락 방지 안전장치
+        if not subnet_id:
+            print("❌ 에러: OCI_SUBNET_OCID 환경변수가 설정되지 않았거나 비어 있습니다.")
+            sys.exit(1)
+
         instances = core_client.list_instances(compartment_id=compartment_id).data
         for inst in instances:
             if inst.display_name == "macrowatch" and inst.lifecycle_state not in ["TERMINATED", "TERMINATING"]:
@@ -88,8 +93,8 @@ def main():
                 display_name="macrowatch",
                 shape="VM.Standard.A1.Flex",
                 shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-                    ocpus=1.0,          # ✅ 1 OCPU (화면 표기 기본값)
-                    memory_in_gbs=6.0   # ✅ 6 GB RAM (화면 표기 기본값)
+                    ocpus=1.0,          # 1 OCPU
+                    memory_in_gbs=6.0   # 6 GB RAM
                 ),
                 image_id=target_image.id,
                 create_vnic_details=oci.core.models.CreateVnicDetails(
