@@ -11,13 +11,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 저장소의 최신 코드를 다운로드 (이 단계가 필수!)
+      # 1. 저장소의 최신 코드를 다운로드
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      # 2. 파이썬 환경 설정
+      # 2. 파이썬 환경 설정 (setup-python 액션 사용)
       - name: Set up Python
-        uses: actions/checkout@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
